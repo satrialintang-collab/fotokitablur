@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Foto Kita Blur</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --black:    #000000;
+      --dark:     #1c1c1e;
+      --dark2:    #2c2c2e;
+      --dark3:    #3a3a3c;
+      --text:     #ffffff;
+      --sub:      rgba(255,255,255,0.55);
+      --yellow:   #ffd60a;
+      --blue:     #0a84ff;
+      --green:    #30d158;
+      --red:      #ff453a;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--black);
+      color: var(--text);
+      font-family: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      height: 100dvh;
+      padding: env(safe-area-inset-top, 12px) 0 env(safe-area-inset-bottom, 12px);
+    }
+
+    /* ── Top bar ── */
+    .top-bar {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px 0;
+      flex-shrink: 0;
+    }
+
+    .top-btn {
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      background: var(--dark2);
+      border: none;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      color: var(--text);
+      transition: background 0.15s;
+    }
+    .top-btn:active { background: var(--dark3); }
+    .top-btn.music-on { background: var(--yellow); color: var(--black); }
+
+    .mode-label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      color: var(--sub);
+      text-transform: uppercase;
+    }
+
+    /* ── Viewfinder ── */
+    .viewfinder-wrap {
+      position: relative;
+      width: 100%;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+
+    #blurCanvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      transform: scaleX(-1);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+    #blurCanvas.active { opacity: 1; }
+    #procCanvas { display: none; }
+
+    /* flash effect */
+    .flash-overlay {
+      position: absolute;
+      inset: 0;
+      background: white;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 10;
+      transition: opacity 0.05s;
+    }
+    .flash-overlay.flashing { opacity: 1; }
+
+    /* ── Blur badge (top of viewfinder) ── */
+    .blur-pill {
+      position: absolute;
+      top: 16px;
+      left: 50%;
+      translate: -50% 0;
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.18);
+      color: var(--yellow);
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      padding: 5px 14px 5px 10px;
+      border-radius: 999px;
+      opacity: 0;
+      transition: opacity 0.25s;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      white-space: nowrap;
+      z-index: 5;
+    }
+    .blur-pill.show { opacity: 1; }
+    .blur-pill-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--yellow);
+      animation: blink 1s infinite;
+    }
+    @keyframes blink {
+      0%,100% { opacity:1; } 50% { opacity:0.25; }
+    }
+
+    /* ── Music bar (inside viewfinder bottom) ── */
+    .music-bar {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      background: linear-gradient(to top, rgba(0,0,0,0.75) 0%, transparent 100%);
+      padding: 20px 18px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+      z-index: 5;
+    }
+    .music-bar.show { opacity: 1; pointer-events: auto; }
+
+    .music-icon {
+      width: 30px; height: 30px;
+      border-radius: 8px;
+      background: var(--yellow);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      color: var(--black);
+    }
+    .music-info { flex: 1; min-width: 0; }
+    .music-title {
+      font-size: 0.78rem;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .music-sub {
+      font-size: 0.65rem;
+      color: var(--sub);
+      margin-top: 1px;
+    }
+    .music-progress {
+      height: 3px;
+      background: rgba(255,255,255,0.2);
+      border-radius: 99px;
+      margin-top: 5px;
+      overflow: hidden;
+    }
+    .music-progress-bar {
+      height: 100%;
+      background: var(--yellow);
+      border-radius: 99px;
+      width: 0%;
+      transition: width 0.5s linear;
+    }
+    .btn-play-mini {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.2);
+      backdrop-filter: blur(4px);
+      border: none;
+      color: white;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .btn-play-mini:active { opacity: 0.7; }
+
+    /* ── Camera mode tabs ── */
+    .mode-tabs {
+      display: flex;
+      gap: 24px;
+      padding: 10px 0 6px;
+      flex-shrink: 0;
+    }
+    .mode-tab {
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      color: var(--sub);
+      text-transform: uppercase;
+      cursor: default;
+    }
+    .mode-tab.active { color: var(--yellow); }
+
+    /* ── Bottom controls (iPhone style) ── */
+    .bottom-controls {
+      width: 100%;
+      padding: 0 28px 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    /* Photo strip thumbnail (left) */
+    .last-thumb {
+      width: 52px; height: 52px;
+      border-radius: 10px;
+      border: 2px solid rgba(255,255,255,0.25);
+      object-fit: cover;
+      cursor: pointer;
+      background: var(--dark2);
+      overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--sub);
+    }
+    .last-thumb img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      border-radius: 8px;
+    }
+
+    /* Shutter button */
+    .shutter {
+      width: 72px; height: 72px;
+      border-radius: 50%;
+      border: 4px solid white;
+      background: transparent;
+      cursor: pointer;
+      position: relative;
+      flex-shrink: 0;
+      transition: transform 0.1s;
+    }
+    .shutter::after {
+      content: '';
+      position: absolute;
+      inset: 5px;
+      border-radius: 50%;
+      background: white;
+      transition: transform 0.1s;
+    }
+    .shutter:active { transform: scale(0.93); }
+    .shutter:active::after { transform: scale(0.88); }
+
+    /* Blur slider (right of shutter area — acts as right control) */
+    .right-ctrl {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      width: 52px;
+    }
+    .blur-label {
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      color: var(--sub);
+      text-transform: uppercase;
+    }
+    input[type=range].blur-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      writing-mode: vertical-lr;
+      direction: rtl;
+      width: 4px;
+      height: 44px;
+      border-radius: 2px;
+      background: var(--dark3);
+      outline: none;
+      cursor: pointer;
+    }
+    input[type=range].blur-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: white;
+      border: 3px solid var(--dark3);
+      cursor: pointer;
+    }
+
+
+
+    /* ── Lightbox ── */
+    #lightbox {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.92);
+      backdrop-filter: blur(20px);
+      z-index: 100;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      padding: 20px;
+    }
+    #lightbox.open { display: flex; }
+    #lightbox img {
+      max-width: 100%;
+      max-height: 72vh;
+      border-radius: 14px;
+      object-fit: contain;
+    }
+    .lb-actions { display: flex; gap: 12px; }
+    .lb-btn {
+      padding: 10px 26px;
+      border-radius: 12px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      font-family: -apple-system, sans-serif;
+    }
+    .lb-btn.ghost { background: var(--dark2); color: white; }
+    .lb-btn.primary { background: var(--blue); color: white; }
+
+    /* ── Perm screen ── */
+    #permScreen {
+      position: fixed;
+      inset: 0;
+      background: var(--black);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      z-index: 200;
+      text-align: center;
+      padding: 36px;
+    }
+    .perm-icon {
+      width: 70px; height: 70px;
+      border-radius: 20px;
+      background: var(--dark2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 2rem;
+      margin-bottom: 6px;
+    }
+    #permScreen h2 { font-size: 1.3rem; font-weight: 700; }
+    #permScreen p { font-size: 0.85rem; color: var(--sub); max-width: 280px; line-height: 1.6; }
+    .btn-perm {
+      margin-top: 10px;
+      padding: 14px 40px;
+      border-radius: 14px;
+      background: var(--blue);
+      color: white;
+      border: none;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: -apple-system, sans-serif;
+      transition: opacity 0.2s;
+    }
+    .btn-perm:active { opacity: 0.8; }
+  </style>
+</head>
+<body>
+
+<!-- Permission screen -->
+<div id="permScreen">
+  <div class="perm-icon">📸</div>
+  <h2>Foto Kita Blur</h2>
+  <p>Izinkan akses kamera. Tunjukkan telapak tangan ke kamera untuk efek blur otomatis.</p>
+  <p>Credit: Hywaves, Claude, Github, Rythm Software</p>
+  <p>Special Thanks to Sal Priadi.</p>
+  <button class="btn-perm" onclick="startCamera()">Aktifkan Kamera</button>
+</div>
+
+<!-- Top bar -->
+<div class="top-bar">
+  <button class="top-btn" title="Musik" id="musicToggleBtn" onclick="toggleMusic()">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/>
+    </svg>
+  </button>
+
+  <span class="mode-label">Selfie</span>
+
+  <button class="top-btn" title="Unduh terakhir" onclick="downloadLast()">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+      <polyline points="7 10 12 15 17 10"/>
+      <line x1="12" y1="15" x2="12" y2="3"/>
+    </svg>
+  </button>
+</div>
+
+<!-- Viewfinder -->
+<div class="viewfinder-wrap">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="blurCanvas"></canvas>
+  <canvas id="procCanvas"></canvas>
+  <div class="flash-overlay" id="flashOverlay"></div>
+
+  <div class="blur-pill" id="blurPill">
+    <div class="blur-pill-dot"></div>
+    BLUR AKTIF
+  </div>
+
+  <!-- Music now playing bar -->
+  <div class="music-bar" id="musicBar">
+    <div class="music-icon">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/>
+      </svg>
+    </div>
+    <div class="music-info">
+      <div class="music-title" id="musicTitle">Foto Kita Blur</div>
+      <div class="music-sub">Memutar sekarang</div>
+      <div class="music-progress"><div class="music-progress-bar" id="progressBar"></div></div>
+    </div>
+    <button class="btn-play-mini" onclick="togglePlay()">
+      <svg id="playIcon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+        <polygon points="5,3 19,12 5,21"/>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<!-- Mode tabs -->
+<div class="mode-tabs">
+  <span class="mode-tab">Video</span>
+  <span class="mode-tab">Foto</span>
+  <span class="mode-tab active">Selfie</span>
+  <span class="mode-tab">Potret</span>
+  <span class="mode-tab">Slo-mo</span>
+</div>
+
+<!-- Bottom controls -->
+<div class="bottom-controls">
+  <!-- Last photo thumbnail -->
+  <div class="last-thumb" id="lastThumb" onclick="openLightbox(currentPhoto)">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="2"/>
+      <path d="M21 15l-5-5L5 21"/>
+    </svg>
+  </div>
+
+  <!-- Shutter -->
+  <button class="shutter" onclick="capture()"></button>
+
+  <!-- Blur intensity (vertical slider) -->
+  <div class="right-ctrl">
+    <span class="blur-label">Blur</span>
+    <input type="range" class="blur-slider" id="blurSlider" min="4" max="30" value="14" />
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox">
+  <img id="lbImg" src="" alt="Foto" />
+  <div class="lb-actions">
+    <button class="lb-btn ghost" onclick="closeLightbox()">Tutup</button>
+    <button class="lb-btn primary" onclick="downloadCurrent()">Simpan</button>
+  </div>
+</div>
+
+
+
+<script>
+// ── Elements ─────────────────────────────────────────
+const video        = document.getElementById('video');
+const blurCanvas   = document.getElementById('blurCanvas');
+const procCanvas   = document.getElementById('procCanvas');
+const blurCtx      = blurCanvas.getContext('2d');
+const procCtx      = procCanvas.getContext('2d');
+const blurPill     = document.getElementById('blurPill');
+const blurSlider   = document.getElementById('blurSlider');
+const flashOverlay = document.getElementById('flashOverlay');
+const musicBar     = document.getElementById('musicBar');
+const musicTitle   = document.getElementById('musicTitle');
+const progressBar  = document.getElementById('progressBar');
+const playIcon     = document.getElementById('playIcon');
+const lastThumb    = document.getElementById('lastThumb');
+const musicToggleBtn = document.getElementById('musicToggleBtn');
+
+// ── State ─────────────────────────────────────────────
+let stream       = null;
+let handDetected = false;
+let blurPx       = 14;
+let photos       = [];
+let currentPhoto = null;
+let hands        = null;
+let mpCamera     = null;
+let musicPlaying = false;
+
+// ── Blur slider ───────────────────────────────────────
+blurSlider.addEventListener('input', () => {
+  blurPx = +blurSlider.value;
+});
+
+// ── Camera ────────────────────────────────────────────
+async function startCamera() {
+  document.getElementById('permScreen').style.display = 'none';
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 960 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    initMediaPipe();
+  } catch(e) {
+    console.error(e);
+    document.getElementById('permScreen').style.display = 'flex';
+    document.querySelector('.btn-perm').textContent = 'Coba Lagi';
+  }
+}
+
+// ── MediaPipe ─────────────────────────────────────────
+function initMediaPipe() {
+  hands = new Hands({
+    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}`
+  });
+  hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.6
+  });
+  hands.onResults(onHandResults);
+
+  mpCamera = new Camera(video, {
+    onFrame: async () => { await hands.send({ image: video }); },
+    width: 1280, height: 960
+  });
+  mpCamera.start();
+}
+
+function onHandResults(results) {
+  const w = video.videoWidth  || blurCanvas.offsetWidth;
+  const h = video.videoHeight || blurCanvas.offsetHeight;
+  blurCanvas.width  = w; blurCanvas.height  = h;
+  procCanvas.width  = w; procCanvas.height  = h;
+  blurCtx.clearRect(0, 0, w, h);
+
+  if (results.multiHandLandmarks?.length > 0) {
+    const open = checkPalmOpen(results.multiHandLandmarks[0]);
+    open ? activateBlur(w, h) : deactivateBlur();
+  } else {
+    deactivateBlur();
+  }
+}
+
+function checkPalmOpen(lm) {
+  const tips = [8,12,16,20], mcps = [5,9,13,17];
+  let ext = 0;
+  for (let i = 0; i < tips.length; i++) {
+    if (lm[tips[i]].y < lm[mcps[i]].y) ext++;
+  }
+  const thumbOut = Math.abs(lm[4].x - lm[3].x) > 0.04;
+  return ext >= 3 && thumbOut;
+}
+
+function activateBlur(w, h) {
+  procCtx.filter = `blur(${blurPx}px)`;
+  procCtx.drawImage(video, 0, 0, w, h);
+  blurCtx.drawImage(procCanvas, 0, 0, w, h);
+  blurCanvas.classList.add('active');
+  if (!handDetected) {
+    handDetected = true;
+    blurPill.classList.add('show');
+  }
+}
+
+function deactivateBlur() {
+  if (!handDetected) return;
+  handDetected = false;
+  blurCanvas.classList.remove('active');
+  blurCtx.clearRect(0, 0, blurCanvas.width, blurCanvas.height);
+  blurPill.classList.remove('show');
+}
+
+// ── Capture ───────────────────────────────────────────
+function capture() {
+  const w = video.videoWidth  || 640;
+  const h = video.videoHeight || 480;
+  const snap = document.createElement('canvas');
+  snap.width = w; snap.height = h;
+  const ctx = snap.getContext('2d');
+  ctx.translate(w, 0); ctx.scale(-1, 1);
+  ctx.drawImage(video, 0, 0, w, h);
+  if (handDetected) {
+    ctx.filter = `blur(${blurPx}px)`;
+    ctx.drawImage(video, 0, 0, w, h);
+    ctx.filter = 'none';
+  }
+
+  // Flash
+  flashOverlay.classList.add('flashing');
+  setTimeout(() => flashOverlay.classList.remove('flashing'), 120);
+
+  const url = snap.toDataURL('image/jpeg', 0.92);
+  photos.push(url);
+  currentPhoto = url;
+  updateThumb(url);
+}
+
+function updateThumb(url) {
+  lastThumb.innerHTML = `<img src="${url}" alt="foto terakhir" />`;
+}
+
+// ── Lightbox ──────────────────────────────────────────
+function openLightbox(url) {
+  if (!url) return;
+  currentPhoto = url;
+  document.getElementById('lbImg').src = url;
+  document.getElementById('lightbox').classList.add('open');
+}
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('open');
+}
+document.getElementById('lightbox').addEventListener('click', e => {
+  if (e.target === document.getElementById('lightbox')) closeLightbox();
+});
+
+// ── Download ──────────────────────────────────────────
+function downloadCurrent() {
+  if (!currentPhoto) return;
+  const a = document.createElement('a');
+  a.href = currentPhoto;
+  a.download = `selfie_${Date.now()}.jpg`;
+  a.click();
+}
+function downloadLast() {
+  if (!photos.length) return;
+  currentPhoto = photos[photos.length - 1];
+  downloadCurrent();
+}
+
+// ── Music ─────────────────────────────────────────────
+// Taruh file "lagu.mp3" di folder yang sama dengan HTML ini
+const bgm = new Audio('fotokitablur.mp3');
+bgm.loop = true;
+bgm.volume = 0.6;
+
+bgm.addEventListener('timeupdate', () => {
+  if (!bgm.duration) return;
+  progressBar.style.width = (bgm.currentTime / bgm.duration * 100) + '%';
+});
+
+function toggleMusic() {
+  if (bgm.paused) {
+    bgm.play().catch(console.warn);
+    musicPlaying = true;
+    musicBar.classList.add('show');
+    musicToggleBtn.classList.add('music-on');
+  } else {
+    bgm.pause();
+    musicPlaying = false;
+    musicBar.classList.remove('show');
+    musicToggleBtn.classList.remove('music-on');
+  }
+  updatePlayIcon();
+}
+
+function togglePlay() {
+  if (bgm.paused) {
+    bgm.play();
+    musicPlaying = true;
+  } else {
+    bgm.pause();
+    musicPlaying = false;
+  }
+  updatePlayIcon();
+}
+
+function updatePlayIcon() {
+  playIcon.innerHTML = musicPlaying
+    ? `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`
+    : `<polygon points="5,3 19,12 5,21"/>`;
+}
+</script>
+</body>
+</html>
